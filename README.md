@@ -1,91 +1,136 @@
 # Aegis API
 
-Secure authentication microservice built with TypeScript and Fastify. Aegis API provides password-based authentication, short-lived RS256 access tokens, rotating refresh tokens, session management, Redis-backed revocation, and security audit logs.
+Self-hosted authentication API built with TypeScript, Fastify, PostgreSQL and Redis.
+Provides password authentication, RS256 JWTs, rotating refresh tokens, revocable sessions,
+password recovery, email verification, a TypeScript client and optional OAuth2/OpenID Connect.
 
-## Highlights
+## Start locally
 
-- Fastify REST API with OpenAPI/Swagger documentation
-- Argon2 password hashing
-- RS256 access tokens and hashed refresh tokens
-- Refresh-token rotation with replay detection
-- PostgreSQL as the source of truth for users and sessions
-- Redis for rate limiting and fast session invalidation
-- Correlation IDs for request tracing
-- Helmet, CORS, validation, and rate limiting
-- Unit tests and container-backed integration tests
+Requires Node.js 22.12+ (Node 24 recommended), pnpm 10.33, PostgreSQL 16 and Redis 7.
 
-## Stack
-
-TypeScript, Node.js 20+, Fastify, Prisma, PostgreSQL 16, Redis 7, Jest, Docker Compose, and pnpm.
-
-## Requirements
-
-- Node.js 20 or newer
-- pnpm 10 or newer
-- Docker with Docker Compose
-
-## Local setup
-
-```bash
+```sh
 cp .env.example .env
+corepack enable
 pnpm install --frozen-lockfile
+pnpm exec prisma generate
 docker compose up -d --wait
 pnpm exec prisma migrate deploy
 pnpm dev
 ```
 
-The service listens on `http://localhost:3333` by default.
+The API listens on `http://localhost:3333`. Interactive request schemas are available at `/docs`.
+Configure the email delivery webhook before enabling recovery and verification requests.
 
-- Health check: `GET /health`
-- Swagger UI: `GET /docs`
-- Auth routes: `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, and `/auth/sessions`
+## API
 
-## Testing
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/auth/register` | Register `{email, password}` |
+| POST | `/auth/login` | Get `{accessToken, refreshToken, user}` |
+| POST | `/auth/refresh` | Rotate `{refreshToken}` |
+| GET | `/auth/me` | Current profile; requires bearer access token |
+| POST | `/auth/logout` | Revoke current session |
+| GET | `/auth/sessions` | List active sessions without token hashes |
+| DELETE | `/auth/sessions/:id` | Revoke one of the user's sessions |
+| DELETE | `/auth/sessions` | Revoke all REST sessions |
+| POST | `/auth/forgot-password` | Request password reset with `{email}` |
+| POST | `/auth/reset-password` | Consume `{token, newPassword}`; revoke sessions |
+| POST | `/auth/verification-email` | Request verification for the authenticated account |
+| POST | `/auth/verify-email` | Consume `{token}` |
+| GET | `/.well-known/jwks.json` | Public RS256 signing key |
+| GET | `/health` | Process liveness |
+| GET | `/ready` | PostgreSQL and Redis readiness |
+| GET | `/metrics` | Prometheus counters and latency histogram; requires `METRICS_TOKEN` |
 
-Unit tests do not require containers:
+Session routes, logout and profile require `Authorization: Bearer <accessToken>`.
+Auth responses use `Cache-Control: no-store`. Errors include an `error` code, and every
+request returns `x-correlation-id`. Dependency failures return 503; rate limits return 429
+and `Retry-After`. Invalid credentials/tokens return 401; malformed requests return 400.
 
-```bash
-pnpm test:unit
+## Token and failure semantics
+
+- Access JWT lifetime: 15 minutes. Validate RS256, `iss`, `aud`, `exp` and `kid` using JWKS.
+  Set `JWT_ISSUER` and `JWT_AUDIENCE` consistently across all instances and consumers.
+- JWTs contain `sub`, `role`, `sessionId` and `tokenUse: access`. Previous JWTs without the
+  new issuer/audience/token-use claims must be replaced by logging in after this upgrade.
+- Refresh lifetime: 30 days from login, preserved through rotations. Only SHA-256 hashes
+  are stored. Each successful refresh revokes its predecessor and creates one successor
+  in a single PostgreSQL transaction.
+- Session writers serialize on the user row. Replaying a revoked refresh token revokes
+  **all of that user's REST sessions**, including the winning concurrent refresh.
+  Two concurrent refreshes are therefore a security event, not two successful logins.
+  Clients must serialize rotation; do not blindly retry a refresh after a network timeout.
+- Every protected REST request checks the PostgreSQL session. Lost Redis keys, Redis
+  restarts and failed blacklist writes cannot resurrect a revoked session.
+- Redis supplies shared atomic rate limits. When unavailable, auth/protocol requests fail
+  closed with 503. No local per-process fallback changes the policy. `/health` and JWKS
+  stay available; `/ready` returns 503. A rejected logout must be retried after recovery.
+- PostgreSQL connection/statement timeouts are bounded. Unavailable session checks fail
+  closed. Audit writes are best effort and emit an error log if persistence fails.
+- Public JWT validation in another service is offline and cannot observe immediate session
+  revocation. Proxy through Aegis for immediate enforcement, or accept the 15-minute JWT
+  lifetime in that service. Do not treat JWKS validation as an online session check.
+
+## Email delivery
+
+Set `MAIL_WEBHOOK_URL` and `MAIL_WEBHOOK_TOKEN`. The webhook must accept a JSON POST with
+`Authorization: Bearer <MAIL_WEBHOOK_TOKEN>` and respond with 2xx after accepting delivery:
+
+```json
+{ "to": "dev@example.com", "type": "RESET_PASSWORD", "token": "one-time-token", "expiresAt": "2026-10-15T20:00:00.000Z" }
 ```
 
-Integration tests use the PostgreSQL and Redis containers:
+`type` is `RESET_PASSWORD` or `VERIFY_EMAIL`. Your mail adapter constructs a frontend link
+and sends it through your provider. The frontend submits the token to the matching POST
+endpoint; merely opening a link never consumes a token. Use HTTPS in production. Do not
+log the webhook body or put tokens in analytics. Plaintext tokens are never returned by
+the API or persisted in PostgreSQL.
 
-```bash
-pnpm test:containers
-```
+Reset tokens expire in 30 minutes; verification tokens in 24 hours. Issuance is limited
+per account to once a minute, in addition to shared IP limits. Issuing another token
+invalidates the previous one. Delivery failure deletes the undelivered token and emits
+`identity_delivery_failed`. The public reset request remains 202 for unknown addresses
+and delivery failures; operators should alert on that event. Missing delivery configuration
+returns 503 uniformly. Token consumption, password update and session revocation commit
+atomically; expired/replayed tokens fail. Password reset also removes persisted OIDC state
+for the account. Successful password reset does not automatically log the user in.
 
-Stop and remove the local test containers and volumes with `pnpm test:containers:down`.
+## TypeScript SDK
 
-For a complete local quality check:
+See [packages/sdk/README.md](packages/sdk/README.md). Build with `pnpm sdk:build`.
+The package has no runtime dependencies and uses native fetch. It is included in the
+repository and has not been published to npm. It keeps tokens in memory and coalesces
+concurrent refresh calls within one client instance.
 
-```bash
+## OAuth2 / OIDC
+
+Opt-in integration using `oidc-provider` with a PostgreSQL adapter, Authorization Code,
+mandatory PKCE, explicit client redirect URIs, discovery, userinfo and revocation.
+Disabled by default. See [docs/oidc.md](docs/oidc.md) for configuration and the login/consent
+UI contract. This deployment has not undergone OpenID conformance certification.
+
+## Operations and tests
+
+```sh
 pnpm typecheck
-pnpm test
+pnpm lint
+pnpm test                 # deterministic unit tests; no services
+pnpm sdk:build
 pnpm build
+pnpm test:containers      # local disposable PostgreSQL + Redis /15
+# With test services running:
+NODE_ENV=test DATABASE_URL=postgresql://root:password@localhost:5432/auth_db REDIS_URL=redis://localhost:6379/15 pnpm test:oidc
 ```
 
-## Production security
+Integration tests require a localhost database, `NODE_ENV=test` and the reserved Redis
+DB 15. They flush that Redis database and remove users whose email starts `integration-`.
+Use disposable infrastructure. `pnpm test:containers:down` removes compose volumes.
 
-In production, set `NODE_ENV=production`, provide `PRIVATE_KEY` and `PUBLIC_KEY` through a secrets manager, and configure `CORS_ORIGINS` with an explicit comma-separated allowlist. Never commit `.env`, PEM files, access tokens, or database credentials.
+CI runs migrations, types, lint, unit/integration tests, SDK/server builds, an OIDC
+end-to-end flow and disposable load smoke tests. Latency/status reports are attached to
+the Actions run as `load-smoke-results`. See [docs/operations.md](docs/operations.md) for
+load profiles, observability, retention and deployment details.
 
-Access tokens expire after 15 minutes. Refresh tokens are stored only as SHA-256 hashes and are rotated on every refresh. Reuse of a revoked refresh token revokes the user's active sessions and creates a critical audit event.
+## Contributing and security
 
-## Project structure
-
-```text
-src/
-├── modules/auth/          # Authentication routes, service, repository, and schemas
-├── shared/http/           # Request middleware and correlation IDs
-├── shared/infra/          # Database, Redis, crypto, and logging adapters
-└── integration/           # PostgreSQL/Redis-backed API tests
-prisma/                    # Schema and database migrations
-.github/                   # CI, security policy, and contribution templates
-```
-
-## Contributing
-
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Security vulnerabilities must be reported privately according to [SECURITY.md](SECURITY.md).
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and [LICENSE](LICENSE).

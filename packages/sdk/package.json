@@ -1,0 +1,11 @@
+{
+  "name": "@aegis-api/sdk",
+  "version": "0.1.0",
+  "description": "Typed fetch client for Aegis API",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": { "build": "tsc -p tsconfig.json" }
+}

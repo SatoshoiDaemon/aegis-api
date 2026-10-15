@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import { buildApp } from './app';
+import { prisma } from './shared/infra/db/prisma';
+import { redis } from './shared/infra/redis/redis';
 
 const PORT = Number(process.env.PORT) || 3333;
 
@@ -17,6 +19,7 @@ async function start() {
   const gracefulShutdown = async () => {
     app.log.info('Shutting down server gracefully...');
     await app.close();
+    await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
     process.exit(0);
   };
 

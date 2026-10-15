@@ -18,7 +18,7 @@ export class AuthController {
     );
 
     const accessToken = await reply.jwtSign(
-      { sub: user.id, role: user.role, sessionId: session.id },
+      { sub: user.id, role: user.role, sessionId: session.id, tokenUse: 'access' },
       { expiresIn: '15m' }
     );
 
@@ -37,7 +37,7 @@ export class AuthController {
     );
 
     const accessToken = await reply.jwtSign(
-      { sub: user.id, role: user.role, sessionId: session.id },
+      { sub: user.id, role: user.role, sessionId: session.id, tokenUse: 'access' },
       { expiresIn: '15m' } // Rotação completa
     );
 

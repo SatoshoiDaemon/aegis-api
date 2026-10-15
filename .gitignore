@@ -9,3 +9,5 @@ keys/
 .DS_Store
 
 /src/generated/prisma
+
+packages/sdk/dist/
