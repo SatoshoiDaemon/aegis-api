@@ -15,6 +15,7 @@ export class AppError extends Error {
 }
 
 export const DomainErrors = {
+  ServiceUnavailable: new AppError('Authentication dependency unavailable; retry later', 'service_unavailable', 503),
   InvalidCredentials: new AppError('Email or password is incorrect', 'invalid_credentials', 401),
   UserAlreadyExists: new AppError('User already exists', 'user_already_exists', 409),
   InvalidToken: new AppError('Invalid or malformed token', 'invalid_token', 401),

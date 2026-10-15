@@ -1,88 +1,40 @@
 import { AuthService } from './auth.service';
 import { AuthRepository } from './auth.repository';
 import { DomainErrors } from '../../shared/errors/AppError';
-import { redis } from '../../shared/infra/redis/redis';
-
-// Mock dependencie
 jest.mock('./auth.repository');
+jest.mock('../../shared/infra/redis/redis', () => ({ redis: { set: jest.fn().mockResolvedValue('OK') } }));
+jest.mock('../../shared/infra/db/prisma', () => ({ prisma: {} }));
 
-describe('AuthService Suite - Production Grade', () => {
-  let authService: AuthService;
+describe('AuthService', () => {
+  let service: AuthService;
   let repository: jest.Mocked<AuthRepository>;
-
   beforeEach(() => {
     repository = new AuthRepository() as jest.Mocked<AuthRepository>;
     repository.findActiveSessionsByUserId.mockResolvedValue([]);
-    authService = new AuthService(repository);
+    service = new AuthService(repository);
   });
-
-  afterAll(async () => {
-    await redis.quit();
+  it('audits invalid login', async () => {
+    repository.findUserByEmail.mockResolvedValue(null);
+    await expect(service.login({ email: 'fake@example.com', password: '123' })).rejects.toThrow(DomainErrors.InvalidCredentials);
+    expect(repository.logAudit).toHaveBeenCalledWith('LOGIN_FAIL', undefined, undefined, null, { email: 'fake@example.com' }, 'WARN', null);
   });
-
-  describe('Login Flow', () => {
-    it('Should emit Audit Log for failed login', async () => {
-      repository.findUserByEmail.mockResolvedValue(null);
-
-      await expect(authService.login({ email: 'fake@mail.com', password: '123' })).rejects.toThrow(DomainErrors.InvalidCredentials);
-      expect(repository.logAudit).toHaveBeenCalledWith(
-        'LOGIN_FAIL', undefined, undefined, null, { email: 'fake@mail.com' }, 'WARN', null
-      );
-    });
+  it.each([['invalid', DomainErrors.InvalidToken], ['expired', DomainErrors.TokenExpired]] as const)('rejects %s refresh', async (kind, error) => {
+    repository.rotateSession.mockResolvedValue({ kind });
+    await expect(service.refresh('plain')).rejects.toThrow(error);
   });
-
-  describe('Refresh Rotation Logic', () => {
-    it('Should block reuse if session was revoked, log audit, and revoke all', async () => {
-      repository.findSessionByTokenHash.mockResolvedValue({
-        id: 'session-id',
-        userId: 'user-id',
-        revokedAt: new Date(),
-        expiresAt: new Date(Date.now() + 100000),
-        refreshTokenHash: 'hash',
-        ip: '192.168.1.1',
-        userAgent: 'Test Agent',
-        createdAt: new Date(),
-        user: { id: 'user-id' } as any
-      } as any);
-
-      await expect(authService.refresh('plain-token', '10.0.0.1')).rejects.toThrow(DomainErrors.SessionReuseDetected);
-
-      expect(repository.revokeAllUserSessions).toHaveBeenCalledWith('user-id');
-      expect(repository.logAudit).toHaveBeenCalledWith(
-        'TOKEN_REUSE_DETECTED', '10.0.0.1', undefined, 'user-id',
-        expect.objectContaining({ sessionId: 'session-id', originalIp: '192.168.1.1' }), 'CRITICAL', null
-      );
-    });
-
-    it('Should block expired session', async () => {
-      repository.findSessionByTokenHash.mockResolvedValue({
-        id: 'session-id',
-        userId: 'user-id',
-        revokedAt: null,
-        expiresAt: new Date(Date.now() - 100000), // Expired
-        refreshTokenHash: 'hash',
-        ip: null,
-        userAgent: null,
-        createdAt: new Date(),
-        user: { id: 'user-id' } as any
-      } as any);
-
-      await expect(authService.refresh('plain-token')).rejects.toThrow(DomainErrors.TokenExpired);
-    });
+  it('reports committed replay revocation', async () => {
+    repository.rotateSession.mockResolvedValue({ kind: 'reuse', session: { id: 's1', userId: 'u1', ip: 'original' } } as any);
+    await expect(service.refresh('plain', 'remote')).rejects.toThrow(DomainErrors.SessionReuseDetected);
+    expect(repository.logAudit).toHaveBeenCalledWith('TOKEN_REUSE_DETECTED', 'remote', undefined, 'u1', { sessionId: 's1', originalIp: 'original' }, 'CRITICAL', null);
   });
-
-  describe('Session Management', () => {
-    it('Should explicitly revoke single session and output audit', async () => {
-      const mockPrisma = { session: { findFirst: jest.fn().mockResolvedValue({ id: 's1' }) } };
-      jest.mock('../../shared/infra/db/prisma', () => ({ prisma: mockPrisma }));
-      
-      // We'll skip exact prisma implementation test to avoid messy file mocking, 
-      // but conceptually test the repository logic:
-      await authService.revokeAllSessions('u1', '127.0.0.1');
-      expect(repository.revokeAllUserSessions).toHaveBeenCalledWith('u1');
-      expect(repository.logAudit).toHaveBeenCalledWith(
-        'LOGOUT', '127.0.0.1', undefined, 'u1', { global: true }, 'INFO', null
-      );
-    });
+  it('returns a new token only after the transaction commits', async () => {
+    repository.rotateSession.mockResolvedValue({ kind: 'rotated', session: { id: 'new' }, user: { id: 'u1' }, oldSessionId: 'old' } as any);
+    const result = await service.refresh('original');
+    expect(result.refreshTokenPlain).toMatch(/^[a-f0-9]{80}$/);
+    expect(repository.rotateSession).toHaveBeenCalledWith(expect.stringMatching(/^[a-f0-9]{64}$/), expect.stringMatching(/^[a-f0-9]{64}$/), undefined, undefined);
+  });
+  it('does not swallow transaction failures', async () => {
+    repository.rotateSession.mockRejectedValue(new Error('database offline'));
+    await expect(service.refresh('plain')).rejects.toThrow('database offline');
   });
 });

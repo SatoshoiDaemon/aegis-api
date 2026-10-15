@@ -1,26 +1,26 @@
 import { z } from 'zod';
 
 export const registerSchema = z.object({
-  email: z.string().email('Invalid email address'),
+  email: z.string().trim().toLowerCase().email('Invalid email address'),
   password: z.string().min(8, 'Password must be at least 8 characters long').max(128, 'Password too long'),
 });
 
 export const loginSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(1, 'Password is required'),
+  email: z.string().trim().toLowerCase().email('Invalid email address'),
+  password: z.string().max(128).min(1, 'Password is required'),
 });
 
 export const refreshSchema = z.object({
-  refreshToken: z.string().min(1, 'Refresh token is required'),
+  refreshToken: z.string().regex(/^[a-f0-9]{80}$/, 'Invalid refresh token'),
 });
 
 export const forgotPasswordSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().toLowerCase().email(),
 });
 
 export const resetPasswordSchema = z.object({
   token: z.string().min(1, 'Token is required'),
-  newPassword: z.string().min(8, 'Password must be at least 8 characters long'),
+  newPassword: z.string().max(128).min(8, 'Password must be at least 8 characters long'),
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;

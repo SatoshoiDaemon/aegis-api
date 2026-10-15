@@ -39,7 +39,7 @@ jobs:
           version: 10.33.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec prisma generate
@@ -52,10 +52,42 @@ jobs:
         env:
           NODE_ENV: test
           DATABASE_URL: postgresql://root:password@localhost:5432/auth_db
-          REDIS_URL: redis://localhost:6379
+          REDIS_URL: redis://localhost:6379/15
       - run: pnpm test:integration
         env:
           NODE_ENV: test
           DATABASE_URL: postgresql://root:password@localhost:5432/auth_db
-          REDIS_URL: redis://localhost:6379
+          REDIS_URL: redis://localhost:6379/15
       - run: pnpm build
+      - run: pnpm sdk:build
+      - run: pnpm test:oidc
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://root:password@localhost:5432/auth_db
+          REDIS_URL: redis://localhost:6379/15
+      - name: Disposable load smoke tests
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://root:password@localhost:5432/auth_db
+          REDIS_URL: redis://localhost:6379/15
+          RATE_LIMIT_FACTOR: 1000
+          LOAD_ACK: disposable-environment
+          LOAD_CONCURRENCY: 4
+          LOAD_ITERATIONS: 10
+        run: |
+          node dist/server.js > /tmp/aegis-load.log 2>&1 &
+          aegis_pid=$!
+          trap 'kill "$aegis_pid"' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:3333/ready >/dev/null; then break; fi
+            sleep 1
+          done
+          mkdir -p load-results
+          for mode in me login refresh; do
+            LOAD_MODE="$mode" node scripts/load.mjs > "load-results/$mode.json"
+            cat "load-results/$mode.json"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: load-smoke-results
+          path: load-results/
