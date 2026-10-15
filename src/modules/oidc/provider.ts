@@ -79,7 +79,9 @@ export async function registerOidc(app: FastifyInstance) {
   });
   // Dispatch before Fastify consumes form bodies: oidc-provider owns protocol parsing.
   app.all('/oidc/*', { onRequest: async (request, reply) => {
-    request.raw.url = request.raw.url!.replace(/^\/oidc/, '') || '/';
+    const raw = request.raw as typeof request.raw & { originalUrl?: string };
+    raw.originalUrl = raw.url;
+    raw.url = raw.url!.replace(/^\/oidc/, '') || '/';
     for (const [name, value] of Object.entries(reply.getHeaders())) {
       if (value !== undefined) reply.raw.setHeader(name, value);
     }
