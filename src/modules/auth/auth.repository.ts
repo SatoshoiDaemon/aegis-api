@@ -18,7 +18,7 @@ export class AuthRepository {
       if (session.expiresAt <= new Date()) return { kind: 'expired' } as const;
       await tx.session.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
       const next = await tx.session.create({ data: {
-        userId: session.userId, refreshTokenHash: nextHash, ip, userAgent,
+        userId: session.userId, familyId: session.familyId, refreshTokenHash: nextHash, ip, userAgent,
         expiresAt: session.expiresAt, // Absolute lifetime: rotation cannot extend a stolen session forever.
       } });
       return { kind: 'rotated', session: next, user: session.user, oldSessionId: session.id } as const;
@@ -57,7 +57,7 @@ export class AuthRepository {
     return prisma.$transaction(async tx => {
       const session = await tx.session.findUniqueOrThrow({ where: { id: sessionId } });
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${session.userId}::uuid FOR UPDATE`;
-      return tx.session.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
+      return tx.session.updateMany({ where: { userId: session.userId, familyId: session.familyId, revokedAt: null }, data: { revokedAt: new Date() } });
     });
   }
 

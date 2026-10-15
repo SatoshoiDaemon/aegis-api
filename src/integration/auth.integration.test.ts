@@ -1,3 +1,5 @@
+import { AuthRepository } from '../modules/auth/auth.repository';
+import { AuthService } from '../modules/auth/auth.service';
 import { IdentityService, IdentityMessage } from '../modules/auth/identity.service';
 import { createPublicKey, verify } from 'node:crypto';
 import { buildApp } from '../app';
@@ -109,6 +111,17 @@ describe('Authentication API', () => {
     const winner = responses.find(response => response.statusCode === 200)!.json();
     const me = await app.inject({ method: 'GET', url: '/auth/me', headers: { authorization: `Bearer ${winner.accessToken}` } });
     expect(me.statusCode).toBe(401);
+  });
+
+
+  it('revokes the rotated descendant when an already-authorized logout commits later', async () => {
+    const original = await login();
+    const claims = app.jwt.decode(original.accessToken) as { sub: string; sessionId: string };
+    const service = new AuthService(new AuthRepository());
+    await service.refresh(original.refreshToken);
+    // The logout was authenticated before rotation, but reaches its user lock afterwards.
+    await service.logout(claims.sessionId, claims.sub);
+    expect(await prisma.session.count({ where: { userId: claims.sub, revokedAt: null } })).toBe(0);
   });
 
   it('rejects a revoked access token even after Redis loses all keys', async () => {

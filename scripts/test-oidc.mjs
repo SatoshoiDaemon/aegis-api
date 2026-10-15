@@ -1,3 +1,4 @@
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 if (process.env.NODE_ENV !== 'test' || !process.env.DATABASE_URL?.includes('localhost') || new URL(process.env.REDIS_URL).pathname !== '/15') throw new Error('Requires disposable localhost test DB and Redis /15');
@@ -26,6 +27,7 @@ async function call(method, url, payload, bearer, form = false) {
   return response;
 }
 try {
+  if (redis.status !== 'ready') await once(redis, 'ready', { signal: AbortSignal.timeout(5000) });
   await redis.ping();
   await redis.flushdb();
   assert.equal((await call('POST', '/auth/register', { email, password: 'oidc-test-password-123' })).statusCode, 201);

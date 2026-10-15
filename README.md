@@ -56,7 +56,8 @@ and `Retry-After`. Invalid credentials/tokens return 401; malformed requests ret
 - Refresh lifetime: 30 days from login, preserved through rotations. Only SHA-256 hashes
   are stored. Each successful refresh revokes its predecessor and creates one successor
   in a single PostgreSQL transaction.
-- Session writers serialize on the user row. Replaying a revoked refresh token revokes
+- Session writers serialize on the user row. Logout/revocation follows a session family
+  across rotations, including a successor created before a delayed logout commits. Replaying a revoked refresh token revokes
   **all of that user's REST sessions**, including the winning concurrent refresh.
   Two concurrent refreshes are therefore a security event, not two successful logins.
   Clients must serialize rotation; do not blindly retry a refresh after a network timeout.

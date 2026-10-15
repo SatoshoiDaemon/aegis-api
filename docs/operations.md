@@ -13,6 +13,8 @@
   addresses and resolve case-only duplicates before rollout.
 - Clients must log in again after upgrading because JWT issuer/audience/token-use claims
   are now mandatory. Refresh rotation invalidates the predecessor's REST access token too.
+- Logout and individual revocation cover the entire session family, including a rotation
+  that committed while an already-authenticated logout waited for its database lock.
 - Reuse detection deliberately revokes every REST session for that user, including a
   successful concurrent rotation. Use the SDK's single-flight refresh and coordinate tabs.
 - Pin identical keys/configuration across replicas. JWKS `kid` is the SHA-256 JWK thumbprint.
