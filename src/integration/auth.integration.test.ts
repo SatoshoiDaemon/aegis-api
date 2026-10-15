@@ -140,7 +140,8 @@ describe('Authentication API', () => {
     const tokens = await login();
     const claims = app.jwt.decode(tokens.accessToken) as Record<string, unknown>;
     for (const overrides of [{ aud: 'another-service' }, { iss: 'https://other-issuer.example' }, { tokenUse: 'id' }, { sessionId: undefined }]) {
-      const token = app.jwt.sign({ ...claims, ...overrides });
+      const { aud, iss, ...payloadOverrides } = overrides as Record<string, unknown>;
+      const token = app.jwt.sign({ ...claims, ...payloadOverrides }, { ...(aud ? { aud: String(aud) } : {}), ...(iss ? { iss: String(iss) } : {}) });
       const response = await app.inject({ method: 'GET', url: '/auth/me', headers: { authorization: `Bearer ${token}` } });
       expect(response.statusCode).toBe(401);
     }
@@ -197,7 +198,7 @@ describe('Authentication API', () => {
   });
 
   it('keeps liveness available and rejects authentication predictably during Redis outage', async () => {
-    redis.disconnect();
+    await new Promise<void>(resolve => { redis.once('end', resolve); redis.disconnect(); });
     try {
       const health = await app.inject({ method: 'GET', url: '/health' });
       expect(health.statusCode).toBe(200);

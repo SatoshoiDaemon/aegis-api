@@ -114,7 +114,7 @@ async function setupRoutes() {
     const fastifyError = error as { statusCode?: number };
     const statusCode = typeof fastifyError.statusCode === 'number' ? fastifyError.statusCode : 500;
 
-    if (['P1001', 'P1002', 'P1017', 'P2024', 'ECONNREFUSED', 'ECONNRESET'].includes((error as { code?: string }).code || '')) return reply.code(503).send({ error: 'service_unavailable', statusCode: 503 });
+    if (['P1001', 'P1002', 'P1017', 'P2024', 'P2028', 'ECONNREFUSED', 'ECONNRESET'].includes((error as { code?: string }).code || '')) return reply.code(503).send({ error: 'service_unavailable', statusCode: 503 });
     if (statusCode >= 400 && statusCode < 500 && statusCode !== 429) return reply.code(statusCode).send({ error: 'bad_request', statusCode });
     if (statusCode === 429) {
       return reply.status(429).send({ error: 'Too Many Requests' });
